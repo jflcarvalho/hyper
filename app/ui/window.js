@@ -4,13 +4,15 @@ const {parse: parseUrl} = require('url');
 const uuid = require('uuid');
 const fileUriToPath = require('file-uri-to-path');
 const isDev = require('electron-is-dev');
-const AutoUpdater = require('../auto-updater');
+const updater = require('../updater');
 const toElectronBackgroundColor = require('../utils/to-electron-background-color');
 const {icon, cfgDir} = require('../config/paths');
 const createRPC = require('../rpc');
 const notify = require('../notify');
 const fetchNotifications = require('../notifications');
 const Session = require('../session');
+const contextMenuTemplate = require('./contextmenu');
+const {execCommand} = require('../commands');
 
 module.exports = class Window {
   constructor(options_, cfg, fn) {
@@ -21,7 +23,7 @@ module.exports = class Window {
         backgroundColor: toElectronBackgroundColor(cfg.backgroundColor || '#000'),
         titleBarStyle: 'hidden-inset',
         title: 'Hyper.app',
-        // we want to go frameless on windows and linux
+        // we want to go frameless on Windows and Linux
         frame: process.platform === 'darwin',
         transparent: process.platform === 'darwin',
         icon,
@@ -33,6 +35,11 @@ module.exports = class Window {
     const window = new BrowserWindow(app.plugins.getDecoratedBrowserOptions(winOpts));
     const rpc = createRPC(window);
     const sessions = new Map();
+
+    const updateBackgroundColor = () => {
+      const cfg_ = app.plugins.getDecoratedConfig();
+      window.setBackgroundColor(toElectronBackgroundColor(cfg_.backgroundColor || '#000'));
+    };
 
     // config changes
     const cfgUnsubscribe = app.config.subscribe(() => {
@@ -47,11 +54,12 @@ module.exports = class Window {
       }
 
       // update background color if necessary
+      updateBackgroundColor();
+
       cfg = cfg_;
     });
 
     rpc.on('init', () => {
-      window.setBackgroundColor(toElectronBackgroundColor(cfg.backgroundColor || '#000'));
       window.show();
 
       // If no callback is passed to createWindow,
@@ -68,8 +76,8 @@ module.exports = class Window {
       delete app.windowCallback;
       fetchNotifications(window);
       // auto updates
-      if (!isDev && process.platform !== 'linux') {
-        AutoUpdater(window);
+      if (!isDev) {
+        updater(window);
       } else {
         //eslint-disable-next-line no-console
         console.log('ignoring auto updates during dev');
@@ -152,6 +160,11 @@ module.exports = class Window {
     rpc.on('open external', ({url}) => {
       shell.openExternal(url);
     });
+    rpc.on('open context menu', selection => {
+      const {createWindow} = app;
+      const {buildFromTemplate} = Menu;
+      buildFromTemplate(contextMenuTemplate(createWindow, selection)).popup(window);
+    });
     rpc.on('open hamburger menu', ({x, y}) => {
       Menu.getApplicationMenu().popup(Math.ceil(x), Math.ceil(y));
     });
@@ -166,6 +179,10 @@ module.exports = class Window {
     });
     rpc.on('close', () => {
       window.close();
+    });
+    rpc.on('command', command => {
+      const focusedWindow = BrowserWindow.getFocusedWindow();
+      execCommand(command, focusedWindow);
     });
     const deleteSessions = () => {
       sessions.forEach((session, key) => {
@@ -223,6 +240,7 @@ module.exports = class Window {
       if (!err) {
         load();
         window.webContents.send('plugins change');
+        updateBackgroundColor();
       }
     });
 
